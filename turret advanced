@@ -1,0 +1,199 @@
+// ==================== PINS (unchanged) ====================
+const int stepPin1 = 9;   // Horizontal pan
+const int dirPin1 = 11;
+const int enPin1 = 10;
+
+const int stepPin2 = 5;   // Vertical tilt (LASER IS HERE)
+const int dirPin2 = 6;
+const int enPin2 = 7;
+
+const int laserPin = 3;
+const int buttonPin = 2;
+
+// ==================== CONFIG ====================
+const int pulseDelay = 350;        // Slightly faster for snappier show
+const int stepsPerRev = 3200;      // Match your DM556 microstep setting!
+
+// Travel limits
+const int hMax = stepsPerRev / 2;  // 180° horizontal sweep max
+const int vMax = stepsPerRev / 4;  // 90° vertical — ADJUST to your mechanical limit
+
+// ==================== STATE ====================
+int hPos = 0;
+int vPos = 0;
+int pattern = 0;
+unsigned long patternTimer = 0;
+const unsigned long patternDuration = 10000; // 10 seconds per pattern
+bool buttonPressed = false;
+
+void setup() {
+  pinMode(stepPin1, OUTPUT); pinMode(dirPin1, OUTPUT); pinMode(enPin1, OUTPUT);
+  pinMode(stepPin2, OUTPUT); pinMode(dirPin2, OUTPUT); pinMode(enPin2, OUTPUT);
+  pinMode(laserPin, OUTPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+  
+  digitalWrite(enPin1, LOW);
+  digitalWrite(enPin2, LOW);
+  digitalWrite(laserPin, HIGH);
+  
+  Serial.begin(115200);
+  Serial.println("Laser Turret — Vertical First");
+  
+  // Start centered
+  moveTo(&hPos, 0, hMax, stepPin1, dirPin1);
+  moveTo(&vPos, 0, vMax, stepPin2, dirPin2);
+  
+  patternTimer = millis();
+}
+
+void loop() {
+  // Button cycles pattern
+  if (digitalRead(buttonPin) == LOW && !buttonPressed) {
+    buttonPressed = true;
+    pattern = (pattern + 1) % 4;
+    patternTimer = millis();
+    Serial.print("Pattern: "); Serial.println(pattern);
+    delay(200);
+  }
+  if (digitalRead(buttonPin) == HIGH) buttonPressed = false;
+  
+  // Auto-cycle
+  if (millis() - patternTimer > patternDuration) {
+    pattern = (pattern + 1) % 4;
+    patternTimer = millis();
+    Serial.print("Auto: "); Serial.println(pattern);
+  }
+  
+  switch (pattern) {
+    case 0: patternLighthouse(); break;
+    case 1: patternBounce(); break;
+    case 2: patternWallScan(); break;
+    case 3: patternHelix(); break;
+  }
+}
+
+// ==================== MOVEMENT ENGINE (keep from before) ====================
+void stepMotor(int stepPin, int dirPin, bool dir) {
+  digitalWrite(dirPin, dir ? HIGH : LOW);
+  digitalWrite(stepPin, HIGH);
+  delayMicroseconds(pulseDelay);
+  digitalWrite(stepPin, LOW);
+  delayMicroseconds(pulseDelay);
+}
+
+void moveTo(int *current, int target, int limit, int stepPin, int dirPin) {
+  target = constrain(target, -limit, limit);
+  while (*current != target) {
+    if (*current < target) {
+      stepMotor(stepPin, dirPin, true);
+      (*current)++;
+    } else {
+      stepMotor(stepPin, dirPin, false);
+      (*current)--;
+    }
+  }
+}
+
+// ==================== VERTICAL-FIRST PATTERNS ====================
+
+// PATTERN 0: Lighthouse
+// Vertical does dramatic full-range sweeps. Horizontal steps to a new
+// "sector" only after each vertical sweep. This is the money shot.
+void patternLighthouse() {
+  static bool goingUp = true;
+  static unsigned long lastSectorMove = 0;
+  
+  // Vertical: continuous sweeping
+  if (goingUp) {
+    if (vPos < vMax) { stepMotor(stepPin2, dirPin2, true); vPos++; }
+    else goingUp = false;
+  } else {
+    if (vPos > -vMax) { stepMotor(stepPin2, dirPin2, false); vPos--; }
+    else goingUp = true;
+  }
+  
+  // Horizontal: only move every 2 seconds to a new random sector
+  if (millis() - lastSectorMove > 2000) {
+    int sector = random(-hMax, hMax);
+    moveTo(&hPos, sector, hMax, stepPin1, dirPin1);
+    lastSectorMove = millis();
+  }
+}
+
+// PATTERN 1: The Bounce
+// Vertical bounces like a ball (fast, dramatic). Horizontal creeps
+// slowly in one direction so the pattern drifts across the room.
+void patternBounce() {
+  static bool goingUp = true;
+  static int hDir = 1;
+  
+  // Vertical bounce
+  if (goingUp) {
+    if (vPos < vMax) { stepMotor(stepPin2, dirPin2, true); vPos++; }
+    else goingUp = false;
+  } else {
+    if (vPos > -vMax) { stepMotor(stepPin2, dirPin2, false); vPos--; }
+    else goingUp = true;
+  }
+  
+  // Horizontal: creep 1 step every 3 vertical steps (very slow drift)
+  static int creepCounter = 0;
+  if (++creepCounter >= 3) {
+    creepCounter = 0;
+    if (hDir == 1) {
+      if (hPos < hMax) { stepMotor(stepPin1, dirPin1, true); hPos++; }
+      else hDir = -1;
+    } else {
+      if (hPos > -hMax) { stepMotor(stepPin1, dirPin1, false); hPos--; }
+      else hDir = 1;
+    }
+  }
+}
+
+// PATTERN 2: Wall Scan
+// Horizontal does the sweep, but vertical wiggles rapidly up/down
+// so the laser draws "Z" or zig-zag patterns on the wall.
+void patternWallScan() {
+  static bool hGoingRight = true;
+  static bool vGoingUp = true;
+  static int vWiggleRange = vMax / 3;  // Smaller vertical range for tight scan
+  
+  // Horizontal sweep
+  if (hGoingRight) {
+    if (hPos < hMax) { stepMotor(stepPin1, dirPin1, true); hPos++; }
+    else hGoingRight = false;
+  } else {
+    if (hPos > -hMax) { stepMotor(stepPin1, dirPin1, false); hPos--; }
+    else hGoingRight = true;
+  }
+  
+  // Vertical: rapid wiggle within a band
+  if (vGoingUp) {
+    if (vPos < vWiggleRange) { stepMotor(stepPin2, dirPin2, true); vPos++; }
+    else vGoingUp = false;
+  } else {
+    if (vPos > -vWiggleRange) { stepMotor(stepPin2, dirPin2, false); vPos--; }
+    else vGoingUp = true;
+  }
+}
+
+// PATTERN 3: Helix
+// Vertical moves in a tall sine wave (2× frequency), horizontal in a
+// slow sine wave. The laser draws tall looping spirals on the wall.
+void patternHelix() {
+  static float t = 0;
+  t += 0.04;
+  
+  int hTarget = int(hMax * 0.7 * sin(t));        // Slow, wide
+  int vTarget = int(vMax * sin(2.5 * t));        // Fast, tall (2.5× freq)
+  
+  int hDiff = hTarget - hPos;
+  int vDiff = vTarget - vPos;
+  
+  // Move both incrementally toward target (smooth curve)
+  if (hDiff > 0) { stepMotor(stepPin1, dirPin1, true); hPos++; }
+  else if (hDiff < 0) { stepMotor(stepPin1, dirPin1, false); hPos--; }
+  
+  if (vDiff > 0) { stepMotor(stepPin2, dirPin2, true); vPos++; }
+  else if (vDiff < 0) { stepMotor(stepPin2, dirPin2, false); vPos--; }
+}
